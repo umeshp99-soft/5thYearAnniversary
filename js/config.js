@@ -1,6 +1,7 @@
 const CONFIG = {
-  // Deploy backend/Code.gs as a Web App and paste its /exec URL here.
-  API_URL: "PASTE_YOUR_GOOGLE_APPS_SCRIPT_WEB_APP_URL_HERE",
+  API_URL: "https://script.google.com/a/macros/p99soft.com/s/AKfycbyYR87WDS5cwAe1cyl9skh8s8lh4R5niw5x8Dqa5GpK7sgNzXbuIO1RCmgfhR54dQIB/exec",
+
   QUESTIONS_PER_ROUND: 5,
+
   SECONDS_PER_QUESTION: 20
 };
