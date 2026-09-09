@@ -1,5 +1,5 @@
 const CONFIG = {
-  API_URL: "https://script.google.com/a/macros/p99soft.com/s/AKfycbyYR87WDS5cwAe1cyl9skh8s8lh4R5niw5x8Dqa5GpK7sgNzXbuIO1RCmgfhR54dQIB/exec",
+  API_URL: "https://script.google.com/macros/s/AKfycbz9_JjgFaG3ezCIA95Hr1b7QSFSWlBvq6z58UVNw3fHux2OrKkEers-QAKL5068JsQ/exec",
 
   QUESTIONS_PER_ROUND: 5,
 
