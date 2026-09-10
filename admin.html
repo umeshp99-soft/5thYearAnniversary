@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Quiz Organizer Control</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.7/dist/css/bootstrap.min.css" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css?v=20260910-2">
+</head>
+<body>
+<main class="container py-4 py-md-5">
+<header class="text-center mb-4">
+<div class="badge rounded-pill text-bg-warning mb-3">ORGANIZER</div>
+<h1 class="display-6 fw-bold">🏆 Knockout Quiz Control</h1>
+<p class="text-muted">Review results and activate qualifiers for the next round.</p>
+</header>
+
+<section class="card quiz-card mx-auto">
+<div class="card-body p-4 p-md-5">
+
+<div class="row g-3 align-items-end mb-4">
+<div class="col-md-4">
+<label class="form-label">Organizer PIN</label>
+<input id="pin" type="password" class="form-control form-control-lg" placeholder="Enter PIN">
+</div>
+
+<div class="col-md-4">
+<label class="form-label">Round Results</label>
+<select id="round" class="form-select form-select-lg"></select>
+</div>
+
+<div class="col-md-4">
+<button id="refreshBtn" class="btn btn-outline-primary btn-lg w-100">↻ Refresh</button>
+</div>
+</div>
+
+<div id="message"></div>
+
+<div class="row g-3 align-items-end mb-3">
+<div class="col-md-7">
+<strong id="roundSummary"></strong>
+<div id="qualifierText" class="small text-muted mt-1"></div>
+</div>
+<div class="col-md-5">
+<label class="form-label mb-1">Number to Qualify</label>
+<div class="input-group input-group-lg">
+<input id="qualifyCount" type="number" class="form-control" min="1" step="1" value="20">
+<span class="input-group-text">participants</span>
+</div>
+</div>
+</div>
+
+<div class="table-responsive">
+<table class="table align-middle">
+<thead>
+<tr>
+<th>Rank</th>
+<th>Participant</th>
+<th>Office</th>
+<th>Score</th>
+<th>Time</th>
+</tr>
+</thead>
+<tbody id="resultsBody">
+<tr>
+<td colspan="5" class="text-center text-muted">
+Enter PIN and refresh.
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<button id="activateBtn" class="btn btn-warning btn-lg w-100 mt-3">
+⭐ Qualify Top N for Next Round
+</button>
+
+<div id="tieWarning" class="alert alert-warning mt-3 d-none"></div>
+
+<p class="small text-muted mt-3 mb-0">
+Enter any number (for example 5, 6, or 10). The top N participants are selected automatically using score first, then fastest completion time. If the cutoff has a score/time tie, a warning will be shown and you can decide whether to keep N or increase it.
+</p>
+
+</div>
+</section>
+</main>
+
+<script src="js/config.js?v=20260910-2"></script>
+<script src="js/api.js?v=20260910-2"></script>
+<script>
+let rows = [];
+
+const roundSel = document.getElementById("round");
+
+CONFIG.ROUNDS.forEach((r) => {
+  const o = document.createElement("option");
+  o.value = r.name;
+  o.textContent = `${r.name} → top ${r.qualifiers}`;
+  roundSel.appendChild(o);
+});
+
+roundSel.value = "Round 1";
+
+async function load() {
+  const pin = document.getElementById("pin").value.trim();
+  const round = roundSel.value;
+  const body = document.getElementById("resultsBody");
+
+  if (!pin) {
+    document.getElementById("message").innerHTML =
+      '<div class="alert alert-danger">Enter organizer PIN.</div>';
+    return;
+  }
+
+  body.innerHTML =
+    '<tr><td colspan="6" class="text-center text-muted">Loading...</td></tr>';
+
+  try {
+    const r = await getAdminResults(pin, round);
+
+    if (!r.success) throw Error(r.message);
+
+    rows = Array.isArray(r.data) ? r.data : [];
+
+    const idx = CONFIG.ROUNDS.findIndex(x => x.name === round);
+    const next = CONFIG.ROUNDS[idx + 1];
+
+    document.getElementById("roundSummary").textContent =
+      `${round}: ${rows.length} completed`;
+
+    const countInput = document.getElementById("qualifyCount");
+    if (next) {
+      countInput.disabled = false;
+      countInput.value = Math.min(next.qualifiers, Math.max(1, rows.length || next.qualifiers));
+      document.getElementById("qualifierText").textContent =
+        `Top N by rank will qualify for ${next.name}. Default: top ${next.qualifiers}.`;
+    } else {
+      countInput.disabled = true;
+      document.getElementById("qualifierText").textContent = "Final completed — no next round.";
+    }
+
+    if (!rows.length) {
+      body.innerHTML =
+        '<tr><td colspan="5" class="text-center text-muted">No completed results yet.</td></tr>';
+      return;
+    }
+
+    body.innerHTML = rows.map((x, i) => `
+      <tr>
+        <td><strong>#${x.rank}</strong></td>
+        <td class="fw-semibold">${esc(x.name)}</td>
+        <td>${esc(x.office || "-")}</td>
+        <td><strong>${x.score}/${x.total}</strong></td>
+        <td>${esc(x.timeText || "")}</td>
+      </tr>
+    `).join("");
+
+    updateTieWarning();
+
+  } catch (e) {
+    rows = [];
+    body.innerHTML =
+      `<tr><td colspan="5" class="text-center text-danger">${esc(e.message)}</td></tr>`;
+  }
+}
+
+function updateTieWarning() {
+  const box = document.getElementById("tieWarning");
+  const count = Number(document.getElementById("qualifyCount").value);
+
+  if (!box || !Number.isInteger(count) || count < 1 || count > rows.length || !rows.length) {
+    if (box) box.classList.add("d-none");
+    return;
+  }
+
+  const cutoff = rows[count - 1];
+  if (!cutoff) {
+    box.classList.add("d-none");
+    return;
+  }
+
+  // A cutoff tie exists when participants after the requested N have
+  // exactly the same score AND completion time as the Nth participant.
+  let extra = 0;
+  for (let i = count; i < rows.length; i++) {
+    if (rows[i].score === cutoff.score && rows[i].durationMs === cutoff.durationMs) extra++;
+    else break;
+  }
+
+  if (extra > 0) {
+    const end = count + extra;
+    box.innerHTML = `⚠️ <strong>Tie detected at the qualification cutoff.</strong><br>
+      You selected <strong>${count}</strong> participant(s), but <strong>${extra}</strong> additional participant(s) have the same score and completion time as the #${count} participant.
+      You can keep <strong>${count}</strong>, or change the number to <strong>${end}</strong> to include everyone in the tie.`;
+    box.classList.remove("d-none");
+  } else {
+    box.classList.add("d-none");
+  }
+}
+
+document.getElementById("qualifyCount").addEventListener("input", updateTieWarning);
+
+document.getElementById("refreshBtn").onclick = load;
+roundSel.onchange = load;
+
+document.getElementById("activateBtn").onclick = async () => {
+  const pin = document.getElementById("pin").value.trim();
+  const idx = CONFIG.ROUNDS.findIndex(x => x.name === roundSel.value);
+  const next = CONFIG.ROUNDS[idx + 1];
+  const msg = document.getElementById("message");
+
+  if (!next) {
+    msg.innerHTML =
+      '<div class="alert alert-info">Final is the last round.</div>';
+    return;
+  }
+
+  const count = Number(document.getElementById("qualifyCount").value);
+
+  if (!pin) {
+    msg.innerHTML =
+      '<div class="alert alert-danger">Enter organizer PIN.</div>';
+    return;
+  }
+
+  if (!Number.isInteger(count) || count < 1 || count > rows.length) {
+    msg.innerHTML =
+      `<div class="alert alert-danger">Enter a whole number from 1 to ${rows.length || 1}.</div>`;
+    return;
+  }
+
+  try {
+    const r = await activateRound(
+      count,
+      pin,
+      next.name
+    );
+
+    if (!r.success) throw Error(r.message);
+
+    msg.innerHTML =
+      `<div class="alert alert-success">${esc(r.message)}</div>`;
+
+    await load();
+
+  } catch (e) {
+    msg.innerHTML =
+      `<div class="alert alert-danger">${esc(e.message)}</div>`;
+  }
+};
+
+function esc(v) {
+  return String(v ?? "").replace(
+    /[&<>"']/g,
+    c => ({
+      "&":"&amp;",
+      "<":"&lt;",
+      ">":"&gt;",
+      '"':"&quot;",
+      "'":"&#039;"
+    }[c])
+  );
+}
+</script>
+</body>
+</html>
