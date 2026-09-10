@@ -1,0 +1,498 @@
+let employees = [];
+let QUESTIONS = [];
+let currentPlayer = null;
+let currentIndex = 0;
+let totalPoints = 0;
+let answers = [];
+let startedAt = null;
+let questionStartedAt = null;
+let timerHandle = null;
+let secondsLeft = CONFIG.SECONDS_PER_QUESTION;
+let currentRound = "Round 1";
+let currentSelection = null;
+let participantVerified = false;
+
+window.addEventListener("load", init);
+
+// Anti-copy deterrents. Screenshots/photos cannot be prevented.
+document.addEventListener("contextmenu", e => {
+  if (document.body.classList.contains("quiz-page")) e.preventDefault();
+});
+document.addEventListener("selectstart", e => {
+  if (document.body.classList.contains("quiz-page")) e.preventDefault();
+});
+document.addEventListener("dragstart", e => {
+  if (document.body.classList.contains("quiz-page")) e.preventDefault();
+});
+document.addEventListener("copy", e => {
+  if (document.body.classList.contains("quiz-page")) e.preventDefault();
+});
+document.addEventListener("cut", e => {
+  if (document.body.classList.contains("quiz-page")) e.preventDefault();
+});
+document.addEventListener("paste", e => {
+  if (document.body.classList.contains("quiz-page")) e.preventDefault();
+});
+document.addEventListener("keydown", e => {
+  if (!document.body.classList.contains("quiz-page")) return;
+
+  const k = String(e.key || "").toLowerCase();
+
+  if ((e.ctrlKey || e.metaKey) && ["c","x","v","a","u","s","p"].includes(k)) {
+    e.preventDefault();
+  }
+
+  if (e.key === "F12" ||
+      (e.ctrlKey && e.shiftKey && ["i","j","c"].includes(k))) {
+    e.preventDefault();
+  }
+});
+
+async function init() {
+  const select = document.getElementById("employeeSelect");
+  populateDobSelectors();
+
+  select.disabled = true;
+  document.getElementById("startBtn").disabled = true;
+
+  try {
+    const [er, rr] = await Promise.all([getEmployees(), getRounds()]);
+
+    if (!er.success) throw Error(er.message);
+
+    employees = er.data || [];
+
+    if (rr.success && Array.isArray(rr.data)) {
+      CONFIG.ROUNDS = rr.data;
+    }
+
+    select.innerHTML = '<option value="">Select your name</option>';
+
+    employees
+      .slice()
+      .sort((a,b) => String(a.fullName).localeCompare(String(b.fullName)))
+      .forEach(emp => {
+        const o = document.createElement("option");
+        o.value = emp.email;
+        o.textContent = emp.fullName;
+        select.appendChild(o);
+      });
+
+    select.disabled = false;
+
+  } catch (e) {
+    select.innerHTML = '<option value="">Unable to load participants</option>';
+    showLoginError(e.message || "Unable to load participants.");
+  }
+}
+
+document.getElementById("employeeSelect").addEventListener("change", handleParticipantChange);
+document.getElementById("dobDay").addEventListener("change", resetVerification);
+document.getElementById("dobMonth").addEventListener("change", resetVerification);
+document.getElementById("dobYear").addEventListener("change", resetVerification);
+document.getElementById("startBtn").addEventListener("click", verifyAndStartRound);
+document.getElementById("nextBtn").addEventListener("click", nextQuestion);
+
+function showLoginError(message) {
+  const el = document.getElementById("loginError");
+  el.textContent = message;
+  el.classList.remove("d-none");
+}
+
+function populateDobSelectors() {
+  const day = document.getElementById("dobDay");
+  const month = document.getElementById("dobMonth");
+  const year = document.getElementById("dobYear");
+  for (let i = 1; i <= 31; i++) day.insertAdjacentHTML("beforeend", `<option value="${String(i).padStart(2,"0")}">${i}</option>`);
+  ["January","February","March","April","May","June","July","August","September","October","November","December"].forEach((m,i) => month.insertAdjacentHTML("beforeend", `<option value="${String(i+1).padStart(2,"0")}">${m}</option>`));
+  const thisYear = new Date().getFullYear();
+  for (let y = thisYear; y >= 1940; y--) year.insertAdjacentHTML("beforeend", `<option value="${y}">${y}</option>`);
+}
+
+function getSelectedDob() {
+  const d = document.getElementById("dobDay").value;
+  const m = document.getElementById("dobMonth").value;
+  const y = document.getElementById("dobYear").value;
+  return (d && m && y) ? `${y}-${m}-${d}` : "";
+}
+
+function updateStartButtonState() {
+  const btn = document.getElementById("startBtn");
+  const completeDob = !!getSelectedDob();
+  const hasPlayer = !!currentPlayer;
+  btn.disabled = !(hasPlayer && completeDob);
+  if (!participantVerified) {
+    btn.textContent = hasPlayer ? "🚀 Verify & Start Quiz" : "🚀 Start Quiz";
+  }
+}
+
+function resetVerification() {
+  participantVerified = false;
+  updateStartButtonState();
+  document.getElementById("loginError").classList.add("d-none");
+}
+
+async function verifyAndStartRound() {
+  if (!currentPlayer) return;
+  const dob = getSelectedDob();
+  if (!dob) { showLoginError("Please select your complete date of birth."); return; }
+
+  const btn = document.getElementById("startBtn");
+  btn.disabled = true;
+  btn.textContent = "Verifying...";
+  document.getElementById("loginError").classList.add("d-none");
+
+  try {
+    const v = await verifyParticipant(currentPlayer.email, dob);
+    if (!v.success || !v.verified) throw Error(v.message || "Date of birth does not match.");
+    participantVerified = true;
+    await startRound();
+  } catch (e) {
+    participantVerified = false;
+    btn.disabled = false;
+    btn.textContent = "🚀 Verify & Start Quiz";
+    showLoginError(e.message || "Unable to verify participant.");
+  }
+}
+
+async function handleParticipantChange() {
+  const email = document.getElementById("employeeSelect").value;
+  const emp = employees.find(
+    x => String(x.email).toLowerCase() === String(email).toLowerCase()
+  );
+
+  const btn = document.getElementById("startBtn");
+  const st = document.getElementById("participantStatus");
+
+  btn.disabled = true;
+  btn.textContent = "🚀 Verify & Start Quiz";
+  st.innerHTML = "";
+  currentPlayer = emp || null;
+  participantVerified = false;
+  document.getElementById("dobDay").value = "";
+  document.getElementById("dobMonth").value = "";
+  document.getElementById("dobYear").value = "";
+  document.getElementById("loginError").classList.add("d-none");
+
+  if (!emp) return;
+
+  try {
+    const r = await getParticipantStatus(emp.email);
+
+    if (!r.success) throw Error(r.message);
+
+    const s = r.data;
+    currentRound = s.currentRound;
+
+    if (!s.eligible) {
+      btn.disabled = true;
+
+      if (s.status === "not_qualified") {
+        btn.textContent = "Not Qualified";
+        st.innerHTML =
+          `<span class="text-danger fw-semibold">${s.statusMessage || `You did not qualify for ${currentRound}.`}</span>`;
+      } else if (s.status === "completed") {
+        btn.textContent = "Quiz Completed";
+        st.innerHTML =
+          `<span class="text-success fw-semibold">${s.statusMessage || "You have completed the quiz."}</span>`;
+      } else {
+        btn.textContent = "Round Not Available";
+        st.innerHTML =
+          `<span class="text-muted">${s.statusMessage || `This round is not available yet. Please wait for the host.`}</span>`;
+      }
+      return;
+    }
+
+    const roundInfo =
+      CONFIG.ROUNDS.find(x => x.name === currentRound) || {};
+
+    btn.disabled = true;
+    btn.textContent = `🚀 Verify & Start ${currentRound}`;
+
+    if (currentRound === "Round 1") {
+      st.innerHTML = "";
+    } else {
+      st.innerHTML =
+        `<span class="text-success fw-semibold">You are eligible for ${currentRound}!</span>`;
+    }
+
+    updateStartButtonState();
+
+  } catch (e) {
+    showLoginError(e.message || "Unable to check participant status.");
+  }
+}
+
+async function startRound() {
+  if (!currentPlayer || !participantVerified) return;
+
+  try {
+    const r = await getQuestions(currentRound);
+
+    if (!r.success) throw Error(r.message);
+
+    QUESTIONS = (r.data || []).map(q => ({
+      ...q,
+      options: Array.isArray(q.options) ? q.options.slice() : []
+    }));
+
+    if (!QUESTIONS.length) {
+      throw Error(`No active questions found for ${currentRound}.`);
+    }
+
+    currentIndex = 0;
+    answers = [];
+    startedAt = Date.now();
+
+    totalPoints = QUESTIONS.reduce(
+      (sum, q) => sum + Number(q.points || 1),
+      0
+    );
+
+    document.getElementById("loginSection").classList.add("d-none");
+    document.getElementById("quizSection").classList.remove("d-none");
+
+    document.getElementById("playerName").textContent =
+      currentPlayer.fullName;
+
+    document.getElementById("roundLabel").textContent =
+      currentRound;
+
+    document.getElementById("totalQuestions").textContent =
+      QUESTIONS.length;
+
+    renderQuestion();
+
+  } catch (e) {
+    showLoginError(e.message || "Unable to start round.");
+  }
+}
+
+function renderQuestion() {
+  clearInterval(timerHandle);
+
+  const original = QUESTIONS[currentIndex];
+
+  questionStartedAt = Date.now();
+  secondsLeft = CONFIG.SECONDS_PER_QUESTION;
+  currentSelection = null;
+
+  document.getElementById("questionNumber").textContent =
+    currentIndex + 1;
+
+  document.getElementById("timer").textContent =
+    secondsLeft;
+
+  document.getElementById("progressBar").style.width =
+    `${((currentIndex + 1) / QUESTIONS.length) * 100}%`;
+
+  document.getElementById("questionText").textContent =
+    original.q;
+
+  // Randomize display order, but retain each option's ORIGINAL index.
+  const shuffled = original.options.map((text, index) => ({
+    text,
+    originalIndex: index
+  }));
+
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+
+  const opts = document.getElementById("options");
+  opts.innerHTML = "";
+
+  shuffled.forEach((item, displayIndex) => {
+    const b = document.createElement("button");
+
+    b.type = "button";
+    b.className =
+      "btn btn-outline-dark btn-lg text-start option-btn no-copy";
+
+    b.textContent =
+      `${String.fromCharCode(65 + displayIndex)}. ${item.text}`;
+
+    b.dataset.originalIndex = item.originalIndex;
+
+    b.onclick = () =>
+      chooseAnswer(item.originalIndex, false);
+
+    opts.appendChild(b);
+  });
+
+  // Next is available even when no answer is selected.
+  // If the participant clicks Next without selecting an option,
+  // that question is recorded as unanswered (0 points).
+  const next = document.getElementById("nextBtn");
+
+  next.disabled = false;
+  next.textContent =
+    currentIndex === QUESTIONS.length - 1
+      ? "Finish ✓"
+      : "Next →";
+
+  timerHandle = setInterval(() => {
+    secondsLeft--;
+
+    document.getElementById("timer").textContent =
+      Math.max(0, secondsLeft);
+
+    if (secondsLeft <= 0) {
+      clearInterval(timerHandle);
+      commitCurrentAnswer(true);
+    }
+  }, 1000);
+}
+
+// Selecting an option does NOT stop the timer.
+// The participant can change the selection until Next is clicked
+// or the timer reaches zero.
+function chooseAnswer(selectedOriginalIndex, timedOut) {
+  if (timedOut) {
+    commitCurrentAnswer(true);
+    return;
+  }
+
+  currentSelection = Number(selectedOriginalIndex);
+
+  document.querySelectorAll(".option-btn").forEach(b => {
+    const originalIndex = Number(b.dataset.originalIndex);
+    b.classList.toggle(
+      "border-primary",
+      originalIndex === currentSelection
+    );
+    b.classList.toggle(
+      "bg-primary-subtle",
+      originalIndex === currentSelection
+    );
+  });
+}
+
+// Commit only the LAST selected option when the participant clicks
+// Next/Finish, or when the timer expires.
+function commitCurrentAnswer(timedOut) {
+  if (answers[currentIndex]) return;
+
+  clearInterval(timerHandle);
+
+  const q = QUESTIONS[currentIndex];
+  const elapsed = Date.now() - questionStartedAt;
+
+  answers[currentIndex] = {
+    id: q.id,
+    questionIndex: currentIndex,
+    selectedOriginalIndex:
+      currentSelection == null ? -1 : Number(currentSelection),
+    responseMs: elapsed,
+    timedOut: !!timedOut
+  };
+
+  if (timedOut) {
+    document.getElementById("timer").textContent = "0";
+    setTimeout(nextQuestion, 350);
+  } else {
+    nextQuestion();
+  }
+}
+
+function nextQuestion() {
+  if (!answers[currentIndex]) {
+    commitCurrentAnswer(false);
+    return;
+  }
+
+  if (currentIndex === QUESTIONS.length - 1) {
+    finishRound();
+    return;
+  }
+
+  currentIndex++;
+  renderQuestion();
+}
+
+async function finishRound() {
+  clearInterval(timerHandle);
+
+  document.getElementById("quizSection").classList.add("d-none");
+  document.getElementById("resultSection").classList.remove("d-none");
+
+  document.getElementById("resultName").textContent =
+    currentPlayer.fullName;
+
+  document.getElementById("resultScore").textContent =
+    "…";
+
+  document.getElementById("resultTotal").textContent =
+    totalPoints;
+
+  document.getElementById("resultRound").textContent =
+    currentRound;
+
+  const status =
+    document.getElementById("submissionStatus");
+
+  status.innerHTML =
+    '<span class="text-muted">Saving your score...</span>';
+
+  try {
+    const r = await submitQuiz({
+      participantEmail: currentPlayer.email,
+      participantName: currentPlayer.fullName,
+      round: currentRound,
+      durationMs: Date.now() - startedAt,
+      answers: answers
+    });
+
+    if (!r.success) throw Error(r.message);
+
+    document.getElementById("resultScore").textContent =
+      r.data.score;
+
+    document.getElementById("resultTotal").textContent =
+      r.data.total;
+
+    status.innerHTML =
+      '<div class="alert alert-success">' +
+      '✅ Score recorded! Please wait for the host to announce the qualifiers.' +
+      '</div>';
+
+    // Keep the Go to Main Page button visible after the score is recorded.
+
+  } catch (e) {
+    status.innerHTML =
+      `<div class="alert alert-warning">${escapeHtml(
+        e.message || "Unable to save score."
+      )} Please tell the host.</div>`;
+  }
+}
+
+function clearIntervalSafe() {
+  if (timerHandle) {
+    clearInterval(timerHandle);
+    timerHandle = null;
+  }
+}
+
+function escapeHtml(v) {
+  return String(v ?? "").replace(
+    /[&<>"']/g,
+    c => ({
+      "&":"&amp;",
+      "<":"&lt;",
+      ">":"&gt;",
+      '"':"&quot;",
+      "'":"&#039;"
+    }[c])
+  );
+}
+
+// TIMER/SELECTION FIX v20260910-2
+
+
+// Return to the main participant selection page from the scoring screen.
+document.addEventListener("click", function(e) {
+  if (e.target && e.target.id === "mainPageBtn") {
+    window.location.reload();
+  }
+});
